@@ -2,7 +2,7 @@
  ******************************************************************************
  * @file           : main.c
  * @author         : Markku Kirjava
- * @brief          : STM32F767ZI FreeRTOS LED Blink Demo
+ * @brief          : STM32F767ZI FreeRTOS Smart Cooling Controller
  ******************************************************************************
  * @attention
  *
@@ -28,15 +28,22 @@
 #define GPIOB_MODER     (*(volatile uint32_t*)(GPIOB_BASE + 0x00))
 #define GPIOB_ODR       (*(volatile uint32_t*)(GPIOB_BASE + 0x14))
 
-#define GPIOB_EN        (1 << 1)  // Bit 1 for GPIOB
-#define PB7_MODER       (1 << 14)  // Pin 7, output mode
+#define GPIOB_EN        (1 << 1)   // Bit 1 for GPIOB
+
+// LED pin definitions (Nucleo-F767ZI)
+#define LED_GREEN       0   // LD1 on PB0 (Fan speed indicator)
+#define LED_BLUE        7   // LD2 on PB7 (Alert indicator)
+#define LED_RED         14  // LD3 on PB14 (Emergency indicator)
 
 /* Function prototypes */
 static void LED_Task(void *pvParameters);
 static void GPIO_Init(void);
+static void LED_On(uint8_t pin);
+static void LED_Off(uint8_t pin);
+static void LED_Toggle(uint8_t pin);
 
 /**
- * @brief  LED blink task
+ * @brief  LED blink task (test all three LEDs)
  * @param  pvParameters: pointer to task parameters
  * @retval None
  */
@@ -46,8 +53,10 @@ static void LED_Task(void *pvParameters)
 
     for (;;)
     {
-        /* Toggle LED on PB7 */
-        GPIOB_ODR ^= (1 << 7);
+        /* Toggle all three LEDs for testing */
+        LED_Toggle(LED_GREEN);
+        LED_Toggle(LED_BLUE);
+        LED_Toggle(LED_RED);
         
         /* Delay for 500ms using FreeRTOS */
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -55,7 +64,37 @@ static void LED_Task(void *pvParameters)
 }
 
 /**
- * @brief  Initialize GPIO for LED
+ * @brief  Turn LED on
+ * @param  pin: GPIO pin number (0-15)
+ * @retval None
+ */
+static void LED_On(uint8_t pin)
+{
+    GPIOB_ODR |= (1 << pin);
+}
+
+/**
+ * @brief  Turn LED off
+ * @param  pin: GPIO pin number (0-15)
+ * @retval None
+ */
+static void LED_Off(uint8_t pin)
+{
+    GPIOB_ODR &= ~(1 << pin);
+}
+
+/**
+ * @brief  Toggle LED
+ * @param  pin: GPIO pin number (0-15)
+ * @retval None
+ */
+static void LED_Toggle(uint8_t pin)
+{
+    GPIOB_ODR ^= (1 << pin);
+}
+
+/**
+ * @brief  Initialize GPIO for LEDs
  * @retval None
  */
 static void GPIO_Init(void)
@@ -63,8 +102,14 @@ static void GPIO_Init(void)
     /* Enable clock for GPIOB */
     RCC_AHB1ENR |= GPIOB_EN;
 
-    /* Set PB7 as output */
-    GPIOB_MODER |= PB7_MODER;
+    /* Set PB0, PB7, PB14 as outputs (MODER: 01 = output mode) */
+    GPIOB_MODER &= ~((3 << (LED_GREEN * 2)) | (3 << (LED_BLUE * 2)) | (3 << (LED_RED * 2)));
+    GPIOB_MODER |= ((1 << (LED_GREEN * 2)) | (1 << (LED_BLUE * 2)) | (1 << (LED_RED * 2)));
+    
+    /* Turn off all LEDs initially */
+    LED_Off(LED_GREEN);
+    LED_Off(LED_BLUE);
+    LED_Off(LED_RED);
 }
 
 /**
