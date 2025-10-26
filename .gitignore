@@ -22,6 +22,9 @@ compile_commands.json
 build.ninja
 
 # IDE specific files
+.settings/
+.vscode/
+.code-workspace
 .clangd
 .cache/
 
