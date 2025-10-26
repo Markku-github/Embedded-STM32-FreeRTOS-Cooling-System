@@ -8,6 +8,9 @@ Release/
 *.bin
 *.hex
 *.map
+*.o
+*.d
+*.lst
 
 # CMake generated files
 CMakeCache.txt
@@ -15,24 +18,41 @@ CMakeFiles/
 cmake_install.cmake
 compile_commands.json
 .cmake/
+install_manifest.txt
 
 # Ninja build files
 .ninja_deps
 .ninja_log
 build.ninja
+rules.ninja
 
-# IDE specific files
+# IDE specific files (user-specific, not committed)
 .settings/
 .vscode/
-.code-workspace
+*.code-workspace
 .clangd
 .cache/
+.idea/
+*.iml
+
+# FreeRTOS extras (keep core kernel only)
+FreeRTOS/.git*
+FreeRTOS/examples/
+FreeRTOS/.github/
 
 # OS specific files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Temporary files
 *.tmp
 *.temp
 *~
+*.bak
+*.swp
+*.swo
+
+# Debug and log files
+*.log
+gdb.txt
