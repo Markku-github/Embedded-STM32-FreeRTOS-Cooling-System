@@ -6,9 +6,9 @@
 
 This educational project demonstrates real-time operating system concepts by simulating an industrial cooling system controller. The system monitors temperature, adjusts fan speed (represented by LEDs), and responds to emergency conditions using FreeRTOS task scheduling, state machines, and interrupt handling.
 
-**Current Status: Phase 1/5** 
+**Current Status: Phase 2/5**
 - [x] Three-LED GPIO control (PB0, PB7, PB14)
-- [ ] UART communication
+- [x] UART TX communication (bare-metal, 115200 baud)
 - [ ] State machine controller
 - [ ] Button interrupt handling
 - [ ] System monitoring
@@ -30,7 +30,7 @@ This educational project demonstrates real-time operating system concepts by sim
   - LD2 (Blue, PB7) - Alert indicator  
   - LD3 (Red, PB14) - Emergency indicator
 - **Button:** USER button (PC13) - Emergency sensor (future)
-- **UART:** Virtual COM port via ST-Link (future)
+- **UART:** USART3 on PD8 (TX), PD9 (RX) - Virtual COM port via ST-Link USB (115200 baud, 8N1)
 
 ## Build & Flash
 
@@ -38,6 +38,15 @@ This educational project demonstrates real-time operating system concepts by sim
 CMake ≥ 3.20, GNU Arm Embedded Toolchain, ST-Link or `st-flash`.
 
 ```bash
+# Build
 cmake --preset Debug
 cmake --build build/Debug
+
+# Flash
 st-flash write build/Debug/STM32-RTcore.bin 0x08000000
+```
+
+## Serial Console
+
+Connect to the virtual COM port to see system logs:
+- Settings: 115200 baud, 8 data bits, no parity, 1 stop bit (8N1)
