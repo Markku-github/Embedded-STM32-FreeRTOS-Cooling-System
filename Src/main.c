@@ -2,7 +2,7 @@
  ******************************************************************************
  * @file           : main.c
  * @author         : Markku Kirjava
- * @brief          : STM32F767ZI FreeRTOS Smart Cooling Controller
+ * @brief          : STM32F767ZI FreeRTOS Smart Cooling Controller - Phase 2
  ******************************************************************************
  * @attention
  *
@@ -18,8 +18,10 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 #include "stm32f7xx.h"
 
 // Register definitions for STM32F767ZI
@@ -32,12 +34,55 @@
 #define GPIOB_EN        (1 << 1)   // Bit 1 for GPIOB
 
 // LED pin definitions (Nucleo-F767ZI)
-#define LED_GREEN       0   // LD1 on PB0 (Fan speed indicator)
-#define LED_BLUE        7   // LD2 on PB7 (Alert indicator)
-#define LED_RED         14  // LD3 on PB14 (Emergency indicator)
+#define LED_GREEN       0   // LD1 on PB0 (Fan speed indicator / COOLING state)
+#define LED_BLUE        7   // LD2 on PB7 (System active / MONITORING state)
+#define LED_RED         14  // LD3 on PB14 (Emergency / ALARM state)
+
+// Temperature thresholds (°C)
+#define TEMP_NORMAL_MAX     20   // Below this: MONITORING
+#define TEMP_WARNING_MAX    20   // Above this: COOLING starts
+#define TEMP_CRITICAL       80   // Above this: ALARM
+
+// Queue sizes
+#define TEMP_QUEUE_SIZE     10
+#define LOG_QUEUE_SIZE      20
+
+// Log message max length
+#define LOG_MSG_MAX_LEN     128
+
+/* System state machine */
+typedef enum {
+    STATE_IDLE = 0,      /* System idle, no monitoring */
+    STATE_MONITORING,    /* Normal monitoring, temp < TEMP_WARNING_MAX */
+    STATE_COOLING,       /* Active cooling, temp >= TEMP_WARNING_MAX */
+    STATE_ALARM          /* Critical alarm, temp >= TEMP_CRITICAL */
+} SystemState_t;
+
+/* Temperature data structure */
+typedef struct {
+    float temperature;   /* Temperature in Celsius */
+    uint32_t timestamp;  /* Timestamp in ms */
+} TempData_t;
+
+/* Global FreeRTOS queues */
+static QueueHandle_t xTempQueue = NULL;   /* Temperature data queue */
+static QueueHandle_t xLogQueue = NULL;    /* Log message queue */
+
+/* Current system state (shared, protected by FreeRTOS scheduling) */
+static volatile SystemState_t currentState = STATE_IDLE;
+
+/* Current temperature (shared, updated by AnalysisTask) */
+static volatile float currentTemperature = 0.0f;
+
+/* Emergency signal (shared, indicates external emergency sensor active) */
+static volatile uint8_t emergencySignal = 0;  /* 1 = Emergency sensor active, 0 = Normal */
 
 /* Function prototypes */
-static void LED_Task(void *pvParameters);
+static void ControllerTask(void *pvParameters);
+static void AnalysisTask(void *pvParameters);
+static void LoggerTask(void *pvParameters);
+static void FanControlTask(void *pvParameters);
+static void BlueLEDControlTask(void *pvParameters);
 static void GPIO_Init(void);
 static void UART_Init(void);
 static void UART_SendChar(char c);
@@ -45,53 +90,402 @@ static void UART_SendString(const char *str);
 static void LED_On(uint8_t pin);
 static void LED_Off(uint8_t pin);
 static void LED_Toggle(uint8_t pin);
+static void LED_SetState(SystemState_t state);
+static void Log(const char *message);
 
 /**
- * @brief  LED blink task (test all three LEDs with UART logging)
+ * @brief  Controller task - implements state machine
  * @param  pvParameters: pointer to task parameters
  * @retval None
  */
-static void LED_Task(void *pvParameters)
+static void ControllerTask(void *pvParameters)
 {
-    (void)pvParameters; /* Unused parameter */
-
+    (void)pvParameters;
+    TempData_t tempData;
+    SystemState_t newState;
+    uint32_t idleStartTime = 0;
+    const uint32_t IDLE_DURATION_MS = 5000;  /* 5 seconds in IDLE before auto-start */
+    
+    Log("[CTRL] ControllerTask started");
+    
+    /* Start in IDLE state - stays here until explicitly moved via command */
+    currentState = STATE_IDLE;
+    LED_SetState(currentState);
+    Log("[CTRL] State: IDLE (waiting for start command)");
+    idleStartTime = xTaskGetTickCount();
+    
     for (;;)
     {
-        /* Toggle all three LEDs for testing */
-        LED_Toggle(LED_GREEN);
-        LED_Toggle(LED_BLUE);
-        LED_Toggle(LED_RED);
-        
-        /* Send log message via UART with timestamp */
-        UART_SendString("[");
-        
-        /* Get current tick count and convert to milliseconds */
-        uint32_t timestamp_ms = xTaskGetTickCount();
-        
-        /* Simple integer to string conversion */
-        char buf[16];
-        int i = 0;
-        if (timestamp_ms == 0) {
-            buf[i++] = '0';
-        } else {
-            char rev[16];
-            int j = 0;
-            uint32_t temp = timestamp_ms;
-            while (temp > 0) {
-                rev[j++] = '0' + (temp % 10);
-                temp /= 10;
+        /* Auto-start after IDLE_DURATION_MS for demo purposes */
+        /* TODO: Remove auto-start when UART command interface is ready */
+        if (currentState == STATE_IDLE)
+        {
+            uint32_t currentTime = xTaskGetTickCount();
+            if ((currentTime - idleStartTime) >= IDLE_DURATION_MS)
+            {
+                currentState = STATE_MONITORING;
+                LED_SetState(currentState);
+                Log("[CTRL] State: MONITORING (auto-started for demo)");
             }
-            while (j > 0) {
-                buf[i++] = rev[--j];
+            /* Drain temperature queue but don't process in IDLE */
+            xQueueReceive(xTempQueue, &tempData, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        
+        /* Wait for temperature data from AnalysisTask */
+        if (xQueueReceive(xTempQueue, &tempData, pdMS_TO_TICKS(100)) == pdTRUE)
+        {
+            /* Emergency signal overrides temperature-based state logic */
+            if (emergencySignal)
+            {
+                newState = STATE_ALARM;
+            }
+            /* Normal temperature-based state determination */
+            else if (tempData.temperature >= TEMP_CRITICAL)
+            {
+                newState = STATE_ALARM;
+            }
+            else if (tempData.temperature >= TEMP_WARNING_MAX)
+            {
+                newState = STATE_COOLING;
+            }
+            else if (tempData.temperature < TEMP_NORMAL_MAX)
+            {
+                newState = STATE_MONITORING;
+            }
+            else
+            {
+                /* Hysteresis: stay in current state if between thresholds */
+                newState = currentState;
+            }
+            
+            /* State transition */
+            if (newState != currentState)
+            {
+                char logMsg[LOG_MSG_MAX_LEN];
+                const char* stateNames[] = {"IDLE", "MONITORING", "COOLING", "ALARM"};
+                
+                /* Log different message if emergency-triggered */
+                if (emergencySignal && newState == STATE_ALARM)
+                {
+                    snprintf(logMsg, sizeof(logMsg),
+                             "[CTRL] State: %s -> %s (EMERGENCY SIGNAL!)",
+                             stateNames[currentState], stateNames[newState]);
+                }
+                else
+                {
+                    snprintf(logMsg, sizeof(logMsg),
+                             "[CTRL] State: %s -> %s (Temp: %.1f C)",
+                             stateNames[currentState], stateNames[newState],
+                             tempData.temperature);
+                }
+                Log(logMsg);
+                
+                currentState = newState;
+                LED_SetState(currentState);
+            }
+            /* Even if state doesn't change, update LED (emergency signal might have changed) */
+            else if (currentState == STATE_ALARM)
+            {
+                LED_SetState(currentState);
             }
         }
-        buf[i] = '\0';
         
-        UART_SendString(buf);
-        UART_SendString(" ms] LEDs toggled\r\n");
+        /* Small delay */
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+/**
+ * @brief  Analysis task - simulates temperature sensor and processing
+ * @param  pvParameters: pointer to task parameters
+ * @retval None
+ */
+static void AnalysisTask(void *pvParameters)
+{
+    (void)pvParameters;
+    TempData_t tempData;
+    float simulatedTemp = 0.0f; /* Start at 0°C */
+    uint32_t cycle = 0;
+    
+    Log("[ANLY] AnalysisTask started");
+    
+    for (;;)
+    {
+        /* Simulate temperature variation (sawtooth pattern) */
+        /* Cycle: 0°C -> 100°C over 100 seconds, then reset to IDLE for 5s */
+        if (cycle >= 100)
+        {
+            /* Reset cycle and return to IDLE for 5 seconds */
+            cycle = 0;
+            currentState = STATE_IDLE;
+            LED_SetState(currentState);
+            Log("[ANLY] Cycle complete, returning to IDLE for 5s");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            /* After IDLE, ControllerTask will auto-start to MONITORING */
+        }
         
-        /* Delay for 500ms using FreeRTOS */
-        vTaskDelay(pdMS_TO_TICKS(500));
+        simulatedTemp = 0.0f + (float)cycle;
+        
+        /* Update global current temperature for FanControlTask */
+        currentTemperature = simulatedTemp;
+        
+        /* TODO: Remove this simulation when USER button (PC13) is implemented */
+        /* Simulate emergency sensor trigger at high temperature (90-95°C) for demo */
+        if (simulatedTemp >= 90.0f && simulatedTemp < 95.0f)
+        {
+            if (!emergencySignal)
+            {
+                emergencySignal = 1;
+                Log("[ANLY] SIMULATION: Emergency sensor activated (90-95°C range)");
+            }
+        }
+        else
+        {
+            if (emergencySignal)
+            {
+                emergencySignal = 0;
+                Log("[ANLY] SIMULATION: Emergency sensor deactivated");
+            }
+        }
+        
+        /* Prepare temperature data */
+        tempData.temperature = simulatedTemp;
+        tempData.timestamp = xTaskGetTickCount();
+        
+        /* Send to ControllerTask */
+        if (xQueueSend(xTempQueue, &tempData, pdMS_TO_TICKS(100)) != pdTRUE)
+        {
+            Log("[ANLY] ERROR: TempQueue full!");
+        }
+        
+        /* Log temperature every 5 seconds */
+        if (cycle % 5 == 0)
+        {
+            char logMsg[LOG_MSG_MAX_LEN];
+            snprintf(logMsg, sizeof(logMsg),
+                     "[ANLY] Temperature: %.1f C", simulatedTemp);
+            Log(logMsg);
+        }
+        
+        cycle++;
+        
+        /* Wait 1 second between readings */
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/**
+ * @brief  Fan control task - controls green LED based on temperature
+ * @param  pvParameters: pointer to task parameters
+ * @retval None
+ * @note   Green LED: OFF in IDLE/MONITORING, blinks in COOLING (20-80°C proportional),
+ *         solid in ALARM (≥80°C)
+ */
+static void FanControlTask(void *pvParameters)
+{
+    (void)pvParameters;
+    uint32_t blinkInterval;
+    uint32_t lastToggleTime = 0;
+    
+    const uint32_t MIN_BLINK_INTERVAL_MS = 100;  /* Fastest blink at 80°C */
+    const uint32_t MAX_BLINK_INTERVAL_MS = 2000; /* Slowest blink at 20°C */
+    
+    Log("[FAN] FanControlTask started");
+    
+    for (;;)
+    {
+        float temp = currentTemperature;
+        SystemState_t state = currentState;
+        
+        if (state == STATE_IDLE || state == STATE_MONITORING)
+        {
+            /* No cooling needed - fan off, LED off */
+            LED_Off(LED_GREEN);
+        }
+        else if (state == STATE_COOLING)
+        {
+            /* Active cooling - blink rate proportional to temperature (20-80°C) */
+            if (temp < TEMP_WARNING_MAX) temp = TEMP_WARNING_MAX; /* Clamp to 20°C minimum */
+            if (temp > TEMP_CRITICAL) temp = TEMP_CRITICAL;       /* Clamp to 80°C maximum */
+            
+            /* Linear mapping: 20°C -> 2000ms, 80°C -> 100ms */
+            float tempRange = TEMP_CRITICAL - TEMP_WARNING_MAX;  /* 60°C range */
+            float tempOffset = temp - TEMP_WARNING_MAX;
+            blinkInterval = MAX_BLINK_INTERVAL_MS -
+                           (uint32_t)((tempOffset / tempRange) *
+                           (MAX_BLINK_INTERVAL_MS - MIN_BLINK_INTERVAL_MS));
+            
+            /* Toggle LED at calculated interval */
+            uint32_t currentTime = xTaskGetTickCount();
+            if ((currentTime - lastToggleTime) >= blinkInterval)
+            {
+                LED_Toggle(LED_GREEN);
+                lastToggleTime = currentTime;
+            }
+        }
+        else if (state == STATE_ALARM)
+        {
+            /* Critical temperature - maximum fan speed, LED solid */
+            LED_On(LED_GREEN);
+        }
+        
+        /* Check every 50ms */
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+/**
+ * @brief  Logger task - centralized logging via UART
+ * @param  pvParameters: pointer to task parameters
+ * @retval None
+ */
+static void LoggerTask(void *pvParameters)
+{
+    (void)pvParameters;
+    char logMsg[LOG_MSG_MAX_LEN];
+    
+    /* Send startup banner directly (before queue is active) */
+    UART_SendString("\r\n=== STM32-RTcore: Smart Cooling Controller ===\r\n");
+    UART_SendString("System starting... Phase 2 - State Machine\r\n\r\n");
+    
+    for (;;)
+    {
+        /* Wait for log messages from queue */
+        if (xQueueReceive(xLogQueue, logMsg, portMAX_DELAY) == pdTRUE)
+        {
+            /* Send timestamp */
+            uint32_t timestamp_ms = xTaskGetTickCount();
+            char timeBuf[16];
+            snprintf(timeBuf, sizeof(timeBuf), "[%lu ms] ", timestamp_ms);
+            UART_SendString(timeBuf);
+            
+            /* Send log message */
+            UART_SendString(logMsg);
+            UART_SendString("\r\n");
+        }
+    }
+}
+
+/**
+ * @brief  Blue LED control task - controls blue LED based on system state
+ * @param  pvParameters: pointer to task parameters
+ * @retval None
+ * @note   Blue LED patterns:
+ *         IDLE: Blink (1500ms interval)
+ *         MONITORING: Blink (500ms interval)
+ *         COOLING: Solid ON
+ *         ALARM: Double-pulse pattern (OFF 1s, ON 150ms, OFF 150ms, ON 150ms, repeat)
+ */
+static void BlueLEDControlTask(void *pvParameters)
+{
+    (void)pvParameters;
+    uint32_t lastTime = 0;
+    uint8_t alarmPhase = 0;  /* For ALARM double-pulse pattern */
+    uint8_t ledState = 0;    /* Track LED state for blinking */
+    
+    Log("[BLUE] BlueLEDControlTask started");
+    
+    /* Initialize LED to OFF */
+    LED_Off(LED_BLUE);
+    lastTime = xTaskGetTickCount();
+    
+    for (;;)
+    {
+        SystemState_t state = currentState;
+        uint32_t currentTime = xTaskGetTickCount();
+        
+        switch (state)
+        {
+            case STATE_IDLE:
+                /* Blink - 1500ms interval */
+                if ((currentTime - lastTime) >= 1500)
+                {
+                    ledState = !ledState;
+                    if (ledState)
+                        LED_On(LED_BLUE);
+                    else
+                        LED_Off(LED_BLUE);
+                    lastTime = currentTime;
+                }
+                alarmPhase = 0;  /* Reset alarm pattern */
+                break;
+                
+            case STATE_MONITORING:
+                /* Blink - 500ms interval */
+                if ((currentTime - lastTime) >= 500)
+                {
+                    ledState = !ledState;
+                    if (ledState)
+                        LED_On(LED_BLUE);
+                    else
+                        LED_Off(LED_BLUE);
+                    lastTime = currentTime;
+                }
+                alarmPhase = 0;  /* Reset alarm pattern */
+                break;
+                
+            case STATE_COOLING:
+                /* Solid ON */
+                LED_On(LED_BLUE);
+                ledState = 1;
+                lastTime = currentTime;  /* Reset timer */
+                alarmPhase = 0;  /* Reset alarm pattern */
+                break;
+                
+            case STATE_ALARM:
+                /* Double-pulse pattern: OFF 1000ms -> ON 150ms -> OFF 150ms -> ON 150ms -> repeat */
+                switch (alarmPhase)
+                {
+                    case 0:  /* OFF for 1000ms */
+                        LED_Off(LED_BLUE);
+                        if ((currentTime - lastTime) >= 1000)
+                        {
+                            alarmPhase = 1;
+                            lastTime = currentTime;
+                        }
+                        break;
+                        
+                    case 1:  /* First pulse ON for 150ms */
+                        LED_On(LED_BLUE);
+                        if ((currentTime - lastTime) >= 150)
+                        {
+                            alarmPhase = 2;
+                            lastTime = currentTime;
+                        }
+                        break;
+                        
+                    case 2:  /* OFF for 150ms */
+                        LED_Off(LED_BLUE);
+                        if ((currentTime - lastTime) >= 150)
+                        {
+                            alarmPhase = 3;
+                            lastTime = currentTime;
+                        }
+                        break;
+                        
+                    case 3:  /* Second pulse ON for 150ms */
+                        LED_On(LED_BLUE);
+                        if ((currentTime - lastTime) >= 150)
+                        {
+                            alarmPhase = 0;  /* Reset to start */
+                            lastTime = currentTime;
+                        }
+                        break;
+                        
+                    default:
+                        alarmPhase = 0;
+                        break;
+                }
+                break;
+                
+            default:
+                break;
+        }
+        
+        /* Check every 50ms */
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -123,6 +517,47 @@ static void LED_Off(uint8_t pin)
 static void LED_Toggle(uint8_t pin)
 {
     GPIOB_ODR ^= (1 << pin);
+}
+
+/**
+ * @brief  Set LED states based on system state
+ * @param  state: Current system state
+ * @retval None
+ * @note   Only controls Red LED here. Green LED controlled by FanControlTask,
+ *         Blue LED controlled by BlueLEDControlTask.
+ *         Red LED represents EMERGENCY SENSOR status, not alarm state!
+ */
+static void LED_SetState(SystemState_t state)
+{
+    /* Red LED: ON only when emergency signal is active (external sensor triggered) */
+    if (emergencySignal)
+    {
+        LED_On(LED_RED);
+    }
+    else
+    {
+        LED_Off(LED_RED);
+    }
+}
+
+/**
+ * @brief  Send log message to LoggerTask via queue
+ * @param  message: Log message string (max LOG_MSG_MAX_LEN)
+ * @retval None
+ */
+static void Log(const char *message)
+{
+    char logMsg[LOG_MSG_MAX_LEN];
+    
+    /* Copy message to local buffer */
+    strncpy(logMsg, message, LOG_MSG_MAX_LEN - 1);
+    logMsg[LOG_MSG_MAX_LEN - 1] = '\0';
+    
+    /* Send to logger queue (non-blocking) */
+    if (xLogQueue != NULL)
+    {
+        xQueueSend(xLogQueue, logMsg, 0);
+    }
 }
 
 /**
@@ -228,18 +663,65 @@ int main(void)
     /* Initialize UART */
     UART_Init();
     
-    /* Send startup message */
-    UART_SendString("\r\n=== STM32-RTcore: Smart Cooling Controller ===\r\n");
-    UART_SendString("System starting...\r\n\r\n");
-
-    /* Create LED task */
+    /* Create queues */
+    xTempQueue = xQueueCreate(TEMP_QUEUE_SIZE, sizeof(TempData_t));
+    xLogQueue = xQueueCreate(LOG_QUEUE_SIZE, sizeof(char) * LOG_MSG_MAX_LEN);
+    
+    if (xTempQueue == NULL || xLogQueue == NULL)
+    {
+        /* Queue creation failed - halt */
+        UART_SendString("ERROR: Queue creation failed!\r\n");
+        for (;;);
+    }
+    
+    /* Create LoggerTask (highest priority - handles all logging) */
     xTaskCreate(
-        LED_Task,              /* Task function */
-        "LED_Task",            /* Task name */
-        128,                   /* Stack size (words) */
-        NULL,                  /* Task parameters */
-        tskIDLE_PRIORITY + 1,  /* Priority */
-        NULL                   /* Task handle */
+        LoggerTask,
+        "Logger",
+        256,                   /* Stack size (words) */
+        NULL,
+        tskIDLE_PRIORITY + 3,  /* High priority */
+        NULL
+    );
+    
+    /* Create ControllerTask (state machine) */
+    xTaskCreate(
+        ControllerTask,
+        "Controller",
+        256,
+        NULL,
+        tskIDLE_PRIORITY + 2,
+        NULL
+    );
+    
+    /* Create AnalysisTask (temperature simulation) */
+    xTaskCreate(
+        AnalysisTask,
+        "Analysis",
+        256,
+        NULL,
+        tskIDLE_PRIORITY + 1,
+        NULL
+    );
+    
+    /* Create FanControlTask (green LED control based on temperature) */
+    xTaskCreate(
+        FanControlTask,
+        "FanControl",
+        128,
+        NULL,
+        tskIDLE_PRIORITY + 1,
+        NULL
+    );
+    
+    /* Create BlueLEDControlTask (blue LED control based on state) */
+    xTaskCreate(
+        BlueLEDControlTask,
+        "BlueLED",
+        128,
+        NULL,
+        tskIDLE_PRIORITY + 1,
+        NULL
     );
 
     /* Start FreeRTOS scheduler */
