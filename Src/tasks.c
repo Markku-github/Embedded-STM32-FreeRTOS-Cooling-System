@@ -14,6 +14,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "watchdog.h"
+#include "wcet.h"
 
 /**
  * @brief  Controller task - implements state machine
@@ -36,6 +37,8 @@ void ControllerTask(void *pvParameters)
     
     for (;;)
     {
+        uint32_t wcet_start = WCET_Start();
+        
         /* Wait for temperature data from AnalysisTask */
         BaseType_t queueResult = xQueueReceive(xTempQueue, &tempData, pdMS_TO_TICKS(100));
         
@@ -197,10 +200,13 @@ void ControllerTask(void *pvParameters)
         
         loopCount++;
         
+        /* Record task execution time (before delay) */
+        WCET_StopAndRecord("Controller", wcet_start);
+        
         /* Report heartbeat to watchdog */
         Watchdog_ReportHeartbeat(WATCHDOG_TASK_CONTROLLER);
         
-        /* Small delay */
+        /* Delay is not measured */
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -225,6 +231,8 @@ void AnalysisTask(void *pvParameters)
     
     for (;;)
     {
+        uint32_t wcet_start = WCET_Start();
+        
         /* Use current temperature set via UART command */
         /* No simulation - temperature is controlled manually via 'temp' command */
         
@@ -278,6 +286,9 @@ void AnalysisTask(void *pvParameters)
         }
         
         loopCount++;
+        
+        /* Record task execution time */
+        WCET_StopAndRecord("Analysis", wcet_start);
         
         /* Report heartbeat to watchdog */
         Watchdog_ReportHeartbeat(WATCHDOG_TASK_ANALYSIS);

@@ -24,6 +24,7 @@
 #include "logger.h"
 #include "config.h"
 #include "watchdog.h"
+#include "wcet.h"
 
 /**
  * @brief  Initialize USART6 for command interface (115200 baud, 8N1)
@@ -136,6 +137,7 @@ static void processCommand(char *cmd, uint8_t len)
         UART_Comm_SendString("status       - Show status\r\n");
         UART_Comm_SendString("emergency    - Trigger emergency (ALARM state)\r\n");
         UART_Comm_SendString("reset        - Reset to IDLE (temp=0, clear emergency)\r\n");
+        UART_Comm_SendString("perf         - Show task performance metrics\r\n");
         UART_Comm_SendString("help         - Show help\r\n");
     }
     else if (len == 6 && strncmp_lower(cmd, "status", 6))
@@ -240,6 +242,11 @@ static void processCommand(char *cmd, uint8_t len)
             Log("[CMD] WARNING: Emergency mutex timeout in emergency command");
         }
     }
+    else if (len == 4 && strncmp_lower(cmd, "perf", 4))
+    {
+        /* Show task performance metrics */
+        WCET_PrintReport();
+    }
     else { UART_Comm_SendString("Unknown command. Type 'help'\r\n"); }
 }
 
@@ -264,25 +271,52 @@ void CommandTask(void *pvParameters)
         /* Use timeout instead of portMAX_DELAY to allow periodic processing */
         if (xQueueReceive(xCmdQueue, &rxChar, pdMS_TO_TICKS(QUEUE_RECEIVE_TIMEOUT_MS)) == pdTRUE)
         {
+            uint32_t wcet_start = WCET_Start();
+            
             if (rxChar == '\r' || rxChar == '\n') 
             { 
+                cmdBuffer[idx] = '\0';
+                
+                /* Stop measurement before blocking operations */
+                WCET_StopAndRecord("Command", wcet_start);
+                
+                /* I/O and command processing (not measured - may block) */
                 UART_Comm_SendString("\r\n"); 
-                cmdBuffer[idx] = '\0'; 
                 processCommand(cmdBuffer, idx); 
                 idx = 0; 
                 UART_Comm_SendString("> "); 
             }
             else if (rxChar >= 0x20 && rxChar <= 0x7E && idx < CMD_BUFFER_SIZE) 
             { 
-                cmdBuffer[idx++] = rxChar; 
+                cmdBuffer[idx++] = rxChar;
+                
+                /* Stop measurement before echo */
+                WCET_StopAndRecord("Command", wcet_start);
+                
+                /* I/O (not measured) */
                 UART_Comm_SendChar(rxChar); 
             }
             else if ((rxChar == 0x08 || rxChar == 0x7F) && idx > 0) 
             { 
-                idx--; 
+                idx--;
+                
+                /* Stop measurement before backspace echo */
+                WCET_StopAndRecord("Command", wcet_start);
+                
+                /* I/O (not measured) */
                 UART_Comm_SendString("\b \b"); 
             }
-            /* Silently ignore characters when buffer is full (no echo) */
+            else
+            {
+                /* Silently ignore invalid characters */
+                WCET_StopAndRecord("Command", wcet_start);
+            }
+        }
+        else
+        {
+            /* Queue timeout - no work, very short measurement */
+            uint32_t wcet_start = WCET_Start();
+            WCET_StopAndRecord("Command", wcet_start);
         }
         
         /* Report heartbeat to watchdog (even on timeout) */
