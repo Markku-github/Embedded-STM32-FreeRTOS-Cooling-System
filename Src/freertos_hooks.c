@@ -7,6 +7,8 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "config.h"
+#include "stm32f7xx.h"
 
 /**
  * @brief  Application stack overflow hook (if enabled in FreeRTOSConfig.h)
@@ -38,10 +40,11 @@ void vApplicationMallocFailedHook(void)
 /**
  * @brief  Application idle hook (if enabled in FreeRTOSConfig.h)
  * @retval None
+ * @note   Watchdog is now fed by WatchdogTask based on task heartbeats
  */
 void vApplicationIdleHook(void)
 {
-    /* Optional: Add low-power mode or background tasks here */
+    /* Idle hook - watchdog feeding moved to WatchdogTask for better monitoring */
 }
 
 /**
