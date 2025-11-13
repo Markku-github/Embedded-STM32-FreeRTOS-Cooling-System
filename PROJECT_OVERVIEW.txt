@@ -1,0 +1,120 @@
+STM32-RTcore — Projektin yleiskatsaus ja tekninen tiivistelmä
+===========================================================
+
+Tarkoitus
+--------
+Tämä tiedosto on tarkoitettu esitysmateriaaliksi työhaastatteluun: se tiivistää projektin tavoitteet, arkkitehtuurin, tärkeimmät tekniset valinnat ja toteutuksen yksityiskohdat suomeksi. Voit lukea tämän läpi ja käyttää kohokohtia vastauksissasi.
+
+1. Projektin kuvaus
+-------------------
+- Nimi: STM32-RTcore (STM32F767 + FreeRTOS).
+- Tavoite: demonstroida reaaliaikaista lämpötilanvalvontaa ja jäähdytyksen ohjausta mikrokontrollerilla. Projekti sisältää tilakoneen (ControllerTask), sensorin lukemisen/monitoroinnin (AnalysisTask), toimilaitteen ohjauksen (FanControlTask), lokituksen (LoggerTask), komentorivikäyttöliittymän UART:in kautta (CommandTask) ja vakauden valvonnan watchdogilla (WatchdogTask).
+
+2. Käytetyt teknologiat ja työkalut
+-----------------------------------
+- RTOS: FreeRTOS (v2022/10-tyyppinen konfiguraatio). Preemptive, tick=1000Hz.
+- MCU: STM32F767 (Cortex-M7), projekti konfiguroitu käyttäen CMSIS/HAL-tyyliä suoraan rekistereihin (osittain low-level code).
+- Build: CMake + Ninja; flashing STM32CubeProgrammer CLI (STM32_Programmer_CLI).
+- Kommunikaatio: USART6 (PG9/PG14) komentoriville 115200 8N1; USART3 käytössä lokitukseen.
+
+3. Ydinarkkitehtuuri ja modulaarisuus
+-----------------------------------
+- Modulirakenne: koodi jakautuu useisiin moduuleihin kuten `tasks`, `uart_comm`, `logger`, `led_control`, `watchdog`, `user_button` ja `utils`.
+- Communication primitives:
+  * Queues: `xTempQueue` (TempData_t), `xLogQueue` (logiviestit), `xCmdQueue` (komentocharit).
+  * Mutexes: `xTempMutex` (suojataan currentTemperature), `xEmergencyMutex` (suojataan emergencySignal).
+  * Watchdog: sovellus käyttää sekä tehtäväkohtaisia heartbeat-merkintöjä että laitteellista IWDG (luku `Watchdog_Init()` ja `Watchdog_ReportHeartbeat()`).
+
+4. Tehtävät (Tasks) — nimi, vastuu ja prioriteetti
+-------------------------------------------------
+Seuraavat sovellustehtävät luodaan `main.c`-sisällön perusteella. Prioriteetit ovat ilmaistuina FreeRTOS-prioriteetteina suhteessa `tskIDLE_PRIORITY`.
+
+- WatchdogTask — prioriteetti: tskIDLE_PRIORITY + 4
+  * Vastuu: monitoroida muiden tehtävien heartbeat-merkintöjä ja ruokkia laitteellista IWDG; kriittinen tehtävä.
+
+- UserButtonTask — prioriteetti: tskIDLE_PRIORITY + 3
+  * Vastuu: käsitellä käyttäjän hätänapin painallusta (emergency-signaali).
+
+- ControllerTask — prioriteetti: tskIDLE_PRIORITY + 2
+  * Vastuu: järjestelmän tilakone (STATE_IDLE, STATE_MONITORING, STATE_COOLING, STATE_CRITICAL, STATE_ALARM). Lukee lämpötiladataa `xTempQueue`-jonosta ja muuttaa LED/aktuointitilaa.
+
+- FanControlTask — prioriteetti: tskIDLE_PRIORITY + 2
+  * Vastuu: ohjata tuuletinta / vihreää LEDiä (toimilaitteen ohjaus). Ajaton reaaliaikainen toiminta rinnakkain Controllerin kanssa.
+
+- AnalysisTask — prioriteetti: tskIDLE_PRIORITY + 1
+  * Vastuu: periodinen lämpötilanluku (tässä projektissa temp arvo asetetaan komentoriviltä) ja lähetetään `xTempQueue`-jonoon.
+
+- BlueLEDControlTask — prioriteetti: tskIDLE_PRIORITY + 1
+  * Vastuu: status-indikaatio (sininen LED), visuaaliset tilailmaisimet.
+
+- LoggerTask — prioriteetti: tskIDLE_PRIORITY + 0 (alin)
+  * Vastuu: käsitellä ja lähettää lokiviestejä sarjaportin (USART3) yli.
+
+- CommandTask — prioriteetti: tskIDLE_PRIORITY + 0 (alin)
+  * Vastuu: vastaanottaa ja käsitellä käyttäjän komentoja UART6:n kautta (`help`, `status`, `temp`, `emergency`, `reset`). Käyttää `xCmdQueue`-jonoa ja käsittelee syötteen 64 tavun bufferilla.
+
+Huom: lisäksi kernelin sisäiset tehtävät kuten IDLE- ja Timer-Service -tehtävät ovat aina läsnä (ei luoda sovelluskoodissa).
+
+5. Keskeiset datarakenteet ja synkronointi
+-----------------------------------------
+- TempData_t: sisältää `temperature` (float) ja `timestamp` (tick count) — välitetään `xTempQueue`:lla.
+- currentTemperature: jaettu muuttuja, suojataan `xTempMutex` ennen lukua/kirjoitusta.
+- emergencySignal: jaettu 1-bitti arvo, suojataan `xEmergencyMutex`.
+- Jokaisessa tehtävässä on watchdog-merkintöjä: `Watchdog_ReportHeartbeat(WATCHDOG_TASK_*)`.
+
+6. Komentorivikäyttöliittymä (UART)
+----------------------------------
+- Portti: USART6, PG9 RX, PG14 TX, baud 115200.
+- Keskeiset komennot ja käyttäytyminen:
+  * `help` — listaa käytettävissä olevat komennot
+  * `status` — tulostaa nykyisen tilan, lämpötilan ja emergency-arvon
+  * `temp <0-100>` — asettaa nykyiseksi lämpötilaksi (int), joka välitetään `AnalysisTask`/`ControllerTask` logiikkaan
+  * `emergency` — asettaa emergencySignal=1 (ALARM-tila)
+  * `reset` — nollaa temperaturin ja emergency-tilan; ControllerTask palauttaa tilan IDLE
+- Suunnittelu: ISR (USART6_IRQHandler) lisää vastaanotetun merkin `xCmdQueue`-jonoon käyttäen `xQueueSendFromISR` ja `portYIELD_FROM_ISR`.
+
+7. Virheiden käsittely
+----------------------
+- Queue/mutex -luontivirheissä ohjelma logittaa virheen ja jää hitaaseen tilaan (looppi).
+- Komenttien parsinta on kirjoitettu niin, että virheelliset syötteet tuottavat selkeän virheilmoituksen (`ERROR: Must be 0-100`, `Unknown command`).
+- Stack overflow tarkistus on kytketty: `configCHECK_FOR_STACK_OVERFLOW` = 2, ja koodi käyttää `uxTaskGetStackHighWaterMark()` paikoin (Controller/Analysis) varoittaakseen pienestä vapaasta pinoavaruudesta.
+
+8. Build ja flash
+------------------
+Build ja flash tapahtuvat projektin juuresta CMake-presetin kautta. Esimerkki Windows PowerShell -komennot:
+
+```powershell
+cmake --preset Debug
+cmake --build build/Debug --config Debug
+"C:/Program Files/STMicroelectronics/STM32Cube/STM32_Programmer_CLI.exe" -c port=SWD -d build/Debug/STM32-RTcore.hex -v -rst
+```
+
+9. Suunnittelupäätökset ja perustelut
+-----------------------------------
+- FreeRTOS tarjoaa yksinkertaisen tavan jäsentää reaaliaikainen sovellus tehtäviksi, joista kukin vastaa yhdestä vastuutilasta (esim. valvonta, ohjaus, indikaatio). Tämä selkeyttää vastuita ja mahdollistaa priorisointien määrittelyn (esim. watchdog korkeimmalla prioriteetilla).
+- Mutexit suojaavat jaetut resurssit (temperatuuri, emergency) pienellä latenssivaikutuksella.
+- Queue-mallilla kommunikoidaan tehtävien välillä kopioimalla tarvittavat arvot (temp-data, log-viestit) — robusti ja helppo debugata.
+
+10. Tunnetut rajoitukset ja opitut asiat
+--------------------------------------
+- Alkuperäinen runtime-profilointi (`perf`) poistettiin koska vapaasti juokseva ajastin ja FreeRTOSin per-task kumulointi eivät olleet synkronissa — johtaa virheellisiin prosenttilukemiin. Suositus: jos halutaan tarkka profiling, käyttää FreeRTOSin configGENERATE_RUN_TIME_STATS -rajapintaa oikein ja synkronoi timerin kernelin odotusten mukaisesti.
+- Logijonon toteutus kopioi merkkitauluja suoraan jonoon; huolehdi että `LOG_MSG_MAX_LEN` riittää.
+- Stack sizejen optimointi: käytetään `uxTaskGetStackHighWaterMark()` varoittamaan vähäisestä pinoavaruudesta.
+
+11. Haastattelussa korostettavat kohdat
+------------------------------------
+- Arkkitehtuurinen erottelu: tehtävävastuut, queues/mutex -patterit, ja miksi ne ovat hyviä reaaliaikaisessa sovelluksessa.
+- Priorisointi: miksi Watchdog ja Emergency ovat korkeampia prioriteetteja ja vaikutus järjestelmän vakauteen.
+- Päätös poistaa `perf`: osoittaa, että ymmärrät kernelin sisäisen käyttäytymisen ja teit prag­maattisen ratkaisun tuotantokelpoisuuden vuoksi.
+- Stack/heap-ennakointi ja diagnostiikka: käytät HWM- ja watchdog-mittareita löytääksesi resurssiongelmat.
+- Kehitystyökalut: CMake, Ninja ja STM32CubeProgrammer — tuntemus näistä on käytännön etu.
+
+12. Mahdolliset jatkokehitysideat
+--------------------------------
+- Lisää automaattinen testiajo (smoke-testit) CI:ssä; automatisoi build+flash+serial-smoke.
+- Lisää telemetry tai SEGGER RTT / ITM debug-virtauksen suorituskykyä ja tracea varten.
+- Palauta runtime profiling hallitusti: implementoi `portGET_RUN_TIME_COUNTER_VALUE()` ja varmista sen synkronointi kernelin kanssa.
+
+Lopuksi
+--------
+Tämä yhteenveto antaa sinulle selkeitä puheenaiheita ja teknisiä yksityiskohtia, joita voit käyttää haastattelussa. Halutessasi voin muokata tekstiä tiiviimmäksi “elevator pitch” -muotoon tai luoda yhden sivun tiivistelmän ansioluetteloosi liitettäväksi.

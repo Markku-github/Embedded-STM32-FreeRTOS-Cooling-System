@@ -66,6 +66,7 @@ set(sources_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/utils.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/user_button.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/watchdog.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/wcet.c
     ${FREERTOS_SOURCES}
 )
 

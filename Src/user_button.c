@@ -14,6 +14,7 @@
 #include "globals.h"
 #include "tasks.h"
 #include "config.h"
+#include "wcet.h"
 
 /* GPIO and peripheral base addresses */
 #define GPIOC_BASE      0x40020800UL
@@ -93,6 +94,8 @@ void UserButtonTask(void *pvParameters)
     
     for (;;)
     {
+        uint32_t wcet_start = WCET_Start();
+        
         /* Wait for notification from ISR (blocks indefinitely) */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         
@@ -123,6 +126,9 @@ void UserButtonTask(void *pvParameters)
             /* False trigger or too short press - ignore */
             Log("[USER_BUTTON] Button press too short or noise - ignored");
         }
+        
+        /* Record task execution time */
+        WCET_StopAndRecord("UserButton", wcet_start);
     }
 }
 
