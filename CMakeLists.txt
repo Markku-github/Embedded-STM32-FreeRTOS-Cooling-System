@@ -58,6 +58,14 @@ set(sources_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/system_stm32f7xx.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/freertos_hooks.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/logger.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/led_control.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/led_patterns.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/uart_comm.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/tasks.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/utils.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/user_button.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/watchdog.c
     ${FREERTOS_SOURCES}
 )
 
