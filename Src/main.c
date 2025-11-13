@@ -37,6 +37,7 @@
 #include "globals.h"
 #include "user_button.h"
 #include "watchdog.h"
+#include "wcet.h"
 
 /* Global FreeRTOS queues (extern in headers) */
 QueueHandle_t xTempQueue = NULL;   /* Temperature data queue */
@@ -216,6 +217,9 @@ int main(void)
 
     /* Initialize watchdog hardware (WatchdogTask will feed it based on heartbeats) */
     Watchdog_Init();
+
+    /* Initialize performance tracking (WCET measurement) */
+    WCET_Init(SystemCoreClock);
 
     /* Start FreeRTOS scheduler */
     vTaskStartScheduler();

@@ -16,6 +16,7 @@
 #include "globals.h"
 #include "logger.h"
 #include "led_patterns.h"
+#include "wcet.h"
 
 /* External queue handle (defined in main.c) */
 extern QueueHandle_t xLogQueue;
@@ -138,6 +139,8 @@ void FanControlTask(void *pvParameters)
     
     for (;;)
     {
+        uint32_t wcet_start = WCET_Start();
+        
         float temp = currentTemperature;
         SystemState_t state = currentState;
         
@@ -164,6 +167,9 @@ void FanControlTask(void *pvParameters)
             /* CRITICAL or ALARM - maximum fan speed, LED solid */
             LED_On(LED_GREEN);
         }
+        
+        /* Record task execution time */
+        WCET_StopAndRecord("FanCtrl", wcet_start);
         
         /* Wait until next cycle (50ms period, no drift) */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -201,6 +207,8 @@ void BlueLEDControlTask(void *pvParameters)
     
     for (;;)
     {
+        uint32_t wcet_start = WCET_Start();
+        
         SystemState_t state = currentState;
         uint32_t currentTime = xTaskGetTickCount();
         
@@ -244,6 +252,9 @@ void BlueLEDControlTask(void *pvParameters)
             LED_On(LED_BLUE);
         else
             LED_Off(LED_BLUE);
+        
+        /* Record task execution time */
+        WCET_StopAndRecord("BlueLED", wcet_start);
         
         /* Wait until next cycle (50ms period, no drift) */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);

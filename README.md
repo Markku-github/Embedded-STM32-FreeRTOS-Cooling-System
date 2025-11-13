@@ -27,7 +27,6 @@ This project demonstrates a professional embedded system implementation using Fr
 - ✅ 8 concurrent FreeRTOS tasks with proper synchronization
 - ✅ DMA-accelerated UART transmission for efficient logging
 - ✅ Watchdog heartbeat monitoring for fault detection
-- ✅ Real-time performance monitoring and statistics
 - ✅ Robust error handling with timeout protection
 - ✅ Buffer overflow protection throughout
 - ✅ Comprehensive Doxygen documentation
@@ -38,7 +37,7 @@ This project demonstrates a professional embedded system implementation using Fr
 - **State Machine:** 5-state system (IDLE, MONITORING, COOLING, CRITICAL, ALARM)
 - **Temperature Control:** Manual temperature setting via UART commands (0-100°C)
 - **LED Indicators:** 3 LEDs showing system state, fan speed, and alarms
-- **Command Interface:** UART-based CLI with 6 commands
+- **Command Interface:** UART-based CLI with 5 commands
 - **Emergency System:** Hardware button for immediate alarm triggering
 - **Watchdog Protection:** Task-level health monitoring with IWDG
 
@@ -84,7 +83,7 @@ This project demonstrates a professional embedded system implementation using Fr
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     FreeRTOS Scheduler                       │
+│                     FreeRTOS Scheduler                      │
 └─────────────────────────────────────────────────────────────┘
                             ▲
                             │
@@ -111,7 +110,7 @@ This project demonstrates a professional embedded system implementation using Fr
     │                       ▲                       │
     │                       │                       │
 Actuator                Temp Queue             Indication
-Control                 (10 items)                 │
+Control                 (10 items)                  │
     │                       │                       │
     └───────────────────────┼───────────────────────┘
                             │
@@ -231,7 +230,6 @@ Displays command list and usage.
 === Commands ===
 temp <0-100> - Set temperature
 status       - Show status
-
 emergency    - Trigger emergency (ALARM state)
 reset        - Reset to IDLE (temp=0, clear emergency)
 help         - Show help
@@ -263,28 +261,6 @@ Show current system state and temperature.
 State: COOLING | Temp: 45C | Emerg: 0
 ```
 
-#### `perf`
-Display CPU usage and stack statistics for all tasks.
-
-**Example output:**
-```
-========================================
-[PERF] Task Performance Statistics
-========================================
-Task Name       | CPU%  | Stack HWM
-----------------|-------|----------
-Watchdog        |  0.05% | 75 words
-Logger          |  2.34% | 120 words
-Controller      |  1.45% | 85 words
-Analysis        |  0.98% | 92 words
-Command         |  0.12% | 156 words
-FanControl      |  0.34% | 68 words
-BlueLED         |  0.89% | 102 words
-UserButton      |  0.02% | 89 words
-========================================
-[PERF] Total runtime: 42 sec
-```
-
 #### `emergency`
 Immediately trigger ALARM state.
 
@@ -301,6 +277,39 @@ Clear emergency and return to IDLE state.
 > reset
 System reset to IDLE state. Temp=0C, Emergency cleared.
 ```
+
+#### `perf`
+Display real-time task performance metrics (WCET analysis).
+
+Captures runtime CPU load for all 8 FreeRTOS tasks with per-task execution times.
+
+**Example Output:**
+```
+========== Task Load Analysis ==========
+Task             | Max (ms) | Avg (ms) | Count
+----------------------------------------
+Watchdog         | 0      | 0      | 56
+FanCtrl          | 0      | 0      | 554
+Controller       | 51     | 48     | 28
+BlueLED          | 0      | 0      | 554
+Analysis         | 2      | 0      | 28
+Logger           | 0      | 0      | 37
+Command          | 1      | 0      | 65
+----------------------------------------
+Uptime: 27651 ms | Total task time: 1359 ms | CPU Load: ~4%
+========================================
+```
+
+**Columns:**
+- **Max (ms):** Longest single execution measured for task
+- **Avg (ms):** Average execution per measurement cycle
+- **Count:** Number of measurements sampled
+- **CPU Load:** Percentage of CPU time used by all tasks (total task time / uptime × 100%)
+
+**Notes:**
+- Measurements exclude blocking I/O (UART DMA, queue timeouts)
+- FreeRTOS tick resolution: 1 ms
+- Suitable for identifying performance bottlenecks and CPU headroom
 
 ## 📊 Performance
 
@@ -335,15 +344,37 @@ The system implements a **task-level heartbeat monitoring** system:
 
 ### Performance Metrics
 
-Measured with TIM5 (1 µs resolution):
+Measured with **FreeRTOS tick-based WCET profiling** (runtime measurement via `perf` command):
+
+#### Task Execution Time Analysis
+
+| Task | Max (ms) | Avg (ms) | Count | Function |
+|------|----------|----------|-------|----------|
+| **Controller** | 51 | 48 | 28 | State machine logic, LED control |
+| **Analysis** | 2 | 0 | 28 | Temperature data processing |
+| **Command** | 1 | 0 | 65 | Character parsing from UART6 |
+| **FanCtrl** | 0 | 0 | 554 | Actuator control (very fast) |
+| **BlueLED** | 0 | 0 | 554 | LED pattern updates (very fast) |
+| **Logger** | 0 | 0 | 37 | Timestamp calculation (DMA I/O excluded) |
+| **Watchdog** | 0 | 0 | 56 | Heartbeat monitoring |
+
+#### System Load Summary
 
 | Metric | Value | Target |
 |--------|-------|--------|
-| Total CPU Usage | < 6% | < 10% |
-| Logger Task | ~2.3% | < 5% |
-| Controller Task | ~1.5% | < 3% |
-| Idle Task | ~93% | > 90% |
-| Scheduler Overhead | < 1% | < 2% |
+| **Total CPU Usage** | ~4% | < 10% |
+| **Total Task Time** | ~1360 ms | |
+| **Uptime (sample)** | ~27650 ms | |
+| **Idle Task** | ~96% | > 90% |
+| **Scheduler Overhead** | < 1% | < 2% |
+
+#### Notes on Measurements
+
+- **Measurement Method:** WCET module uses FreeRTOS `xTaskGetTickCount()` (millisecond resolution)
+- **Accuracy:** ±1-2 ms due to tick granularity
+- **Exclusions:** WCET measurements exclude blocking I/O (UART DMA transfers, queue timeouts)
+- **Command:** Use `perf` command on USART6 to capture live runtime metrics
+- **CPU Load Formula:** (Total task execution time / Uptime) × 100%
 
 **Stack High-Water Marks (minimum free):**
 - All tasks: > 60 words remaining
@@ -451,57 +482,6 @@ Measured with TIM5 (1 µs resolution):
    - Verify DMA1 clock enabled
    - Check DMA IRQ enabled in NVIC
 
-## ⚠️ Known Limitations
-
-### Hardware Limitations
-
-1. **Button Polling Method**
-   - USER button uses polling (100 ms) instead of EXTI interrupts
-   - Reason: EXTI on PC13 unreliable on this Nucleo board
-   - Debounce: 300 ms delay after detection
-   - Trade-off: Slightly higher latency but 100% reliable
-
-2. **HSI Clock Source**
-   - System runs on internal 16 MHz HSI oscillator
-   - Not using PLL or external crystal for simplicity
-   - Adequate for demo, but external clock recommended for production
-
-3. **UART Baud Rate Tolerance**
-   - BRR value 139 empirically determined
-   - Works reliably but may drift with temperature
-   - Consider calibration for extreme environments
-
-### Software Limitations
-
-1. **Temperature Simulation Only**
-   - No actual ADC or sensor integration
-   - Temperature set manually via commands
-   - Easy to extend to real sensor (modify `AnalysisTask`)
-
-2. **DMA Fallback to Polling**
-   - If DMA transfer in progress, uses polling for new messages
-   - Prevents data loss but may briefly block logger task
-   - Consider implementing DMA ping-pong buffer for high-throughput scenarios
-
-3. **Fixed Stack Sizes**
-   - Task stacks statically allocated in `config.h`
-   - Monitored via high-water mark but not dynamically adjusted
-   - Monitor system stability during testing
-
-4. **No Persistent Storage**
-   - Reset reason logged but not saved to flash
-   - No configuration persistence across resets
-   - Consider adding EEPROM emulation for production
-
-### Future Improvements
-
-- [ ] Add real temperature sensor (ADC + thermistor)
-- [ ] Implement flash-based configuration storage
-- [ ] Add Modbus RTU protocol on USART6
-- [ ] Web interface via Ethernet (STM32F767 has MAC)
-- [ ] SD card logging for diagnostics
-- [ ] Low-power modes (STOP/STANDBY)
-
 ## 🤝 Contributing
 
 This project was developed as part of the university's Operating Systems and Concurrency course, but also as part of my own personal learning with RTOS.
@@ -518,6 +498,6 @@ This project is open source and available under the MIT License.
 
 ---
 
-**Project Status:** ✅ Production Ready  
-**Last Updated:** November 10, 2025  
+**Project Status:** Work in Progress
+**Last Updated:** November 13, 2025  
 **Author:** Markku Johannes Kirjava  

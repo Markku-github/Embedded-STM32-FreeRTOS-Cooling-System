@@ -14,6 +14,7 @@
 /* Project headers */
 #include "config.h"
 #include "watchdog.h"
+#include "wcet.h"
 
 /* DMA definitions for USART3 TX */
 #define DMA_BUFFER_SIZE 512
@@ -276,18 +277,29 @@ void LoggerTask(void *pvParameters)
         /* Wait for log messages from queue with timeout */
         if (xQueueReceive(xLogQueue, logMsg, pdMS_TO_TICKS(QUEUE_RECEIVE_TIMEOUT_MS)) == pdTRUE)
         {
+            uint32_t wcet_start = WCET_Start();
+            
             /* Send timestamp manually without snprintf */
             uint32_t timestamp_ms = xTaskGetTickCount();
             char timeBuf[16];
             
-            Logger_SendChar('[');
             itoa_simple(timestamp_ms, timeBuf, sizeof(timeBuf));
+            
+            /* Stop measurement before I/O (blocking UART sends) */
+            WCET_StopAndRecord("Logger", wcet_start);
+            
+            /* I/O operations (not measured - blocking) */
+            Logger_SendChar('[');
             Logger_SendString(timeBuf);
             Logger_SendString(" ms] ");
-            
-            /* Send log message */
             Logger_SendString(logMsg);
             Logger_SendString("\r\n");
+        }
+        else
+        {
+            /* Queue timeout - no work, short measurement */
+            uint32_t wcet_start = WCET_Start();
+            WCET_StopAndRecord("Logger", wcet_start);
         }
         
         /* Report heartbeat to watchdog (even on timeout) */

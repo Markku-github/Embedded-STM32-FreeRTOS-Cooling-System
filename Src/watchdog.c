@@ -11,6 +11,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "logger.h"
+#include "wcet.h"
 
 /* Minimal IWDG register map and base, as not defined in local stm32f7xx.h */
 typedef struct
@@ -113,7 +114,7 @@ void WatchdogTask(void *pvParameters)
     
     for (;;)
     {
-        vTaskDelay(checkPeriod);
+        uint32_t wcet_start = WCET_Start();
         
         now = xTaskGetTickCount();
         uint8_t allTasksAlive = 1;
@@ -146,6 +147,11 @@ void WatchdogTask(void *pvParameters)
             Log("[WDG] System will reset due to task failure");
             /* Let watchdog expire naturally */
         }
+        
+        /* Record task execution time */
+        WCET_StopAndRecord("Watchdog", wcet_start);
+        
+        vTaskDelay(checkPeriod);
     }
 }
 
